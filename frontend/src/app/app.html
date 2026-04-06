@@ -1,0 +1,199 @@
+<main class="min-h-screen bg-background text-on-surface antialiased">
+  <header class="sticky top-0 right-0 left-0 h-16 bg-surface z-40 flex justify-between items-center px-8 text-sm tracking-tight border-b border-outline-variant/60">
+    <div class="flex items-center gap-6">
+      <span class="text-xl font-bold text-petro">Panel de Control de Inversiones</span>
+    </div>
+
+    <div class="flex items-center gap-3 flex-wrap justify-end">
+      <div class="flex items-center gap-2">
+        <label class="text-xs font-semibold text-on-surface-variant uppercase tracking-wider" for="uploadYearSelect">Año (carga SQL)</label>
+        <select
+          id="uploadYearSelect"
+          class="min-w-[5.5rem] rounded-xl border border-outline-variant/70 bg-surface px-3 py-2 text-sm font-semibold text-on-surface shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+          [value]="uploadYear()"
+          (change)="onUploadYearChange($event)"
+        >
+          @for (y of yearOptions; track y) {
+            <option [value]="y">{{ y }}</option>
+          }
+        </select>
+      </div>
+
+      <input
+        #dbFileInput
+        type="file"
+        accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        class="hidden"
+        (change)="onDbExcelSelected($event)"
+      />
+      <button
+        type="button"
+        class="inline-flex items-center gap-2 rounded-xl border border-outline-variant/70 bg-primary px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-60"
+        [disabled]="uploadLoading()"
+        (click)="dbFileInput.click()"
+      >
+        @if (uploadLoading()) {
+          <span class="material-symbols-outlined text-[18px] animate-spin">progress_activity</span>
+          <span>Cargando…</span>
+        } @else {
+          <span class="material-symbols-outlined text-[18px]">upload_file</span>
+          <span>Cargar Excel a BD</span>
+        }
+      </button>
+
+      <div class="flex items-center gap-2 px-4 py-2 bg-custom-teal/10 rounded-full text-petro">
+        <span class="material-symbols-outlined text-sm">insights</span>
+        <span class="font-bold">Total</span>
+      </div>
+    </div>
+  </header>
+
+  @if (uploadMessage()) {
+    <div class="mx-8 mt-3 max-w-7xl mx-auto">
+      <div class="rounded-2xl border border-outline-variant/60 bg-surface-container-lowest px-4 py-2 text-xs font-semibold text-on-surface">
+        {{ uploadMessage() }}
+      </div>
+    </div>
+  }
+
+  <div class="pt-8 pb-12 px-8 max-w-7xl mx-auto space-y-8">
+    @if (error()) {
+      <div class="p-4 rounded-2xl border border-rose-200 bg-rose-50 text-rose-900 text-sm font-semibold">
+        {{ error() }}
+      </div>
+    }
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div class="bg-surface-container-lowest p-6 rounded-3xl border border-outline-variant/60 shadow-sm">
+        <div class="flex justify-between items-start mb-4">
+          <div class="p-2 bg-custom-teal/10 rounded-xl text-primary">
+            <span class="material-symbols-outlined">account_balance</span>
+          </div>
+          <span class="text-[10px] font-bold text-success bg-success-container px-2 py-1 rounded-lg">ACTIVO</span>
+        </div>
+        <p class="text-on-surface-variant text-xs font-semibold mb-1">Inversión Total (Ejecución)</p>
+        <h4 class="text-2xl font-bold text-on-surface">{{ n1(mmValue(report()?.totales?.eje ?? 0)) }}M</h4>
+        <p class="text-[10px] text-slate-400 mt-2">Acumulado a {{ report()?.mesLabel ?? '—' }}</p>
+      </div>
+
+      <div class="bg-surface-container-lowest p-6 rounded-3xl border border-outline-variant/60 shadow-sm">
+        <div class="flex justify-between items-start mb-4">
+          <div class="p-2 bg-surface rounded-xl text-on-surface-variant">
+            <span class="material-symbols-outlined">query_stats</span>
+          </div>
+        </div>
+        <p class="text-on-surface-variant text-xs font-semibold mb-1">PPTO</p>
+        <h4 class="text-2xl font-bold text-on-surface">{{ n1(mmValue(report()?.totales?.ppto ?? 0)) }}M</h4>
+        <p class="text-[10px] text-slate-400 mt-2">Presupuesto acumulado</p>
+      </div>
+
+      <div
+        class="bg-surface-container-lowest p-6 rounded-3xl border border-outline-variant/60 shadow-sm cursor-pointer hover:bg-custom-teal/5 transition-colors"
+        (click)="selectTotalForChart()"
+        title="Ver total en la tendencia mensual"
+      >
+        <div class="flex justify-between items-start mb-4">
+          <div class="p-2 bg-custom-teal/10 rounded-xl text-primary">
+            <span class="material-symbols-outlined">verified</span>
+          </div>
+        </div>
+        <p class="text-on-surface-variant text-xs font-semibold mb-1">Cumplimiento</p>
+        <h4 class="text-2xl font-bold text-teal-hover">{{ (report()?.totales?.cumplimientoPct ?? 0) | number:'1.1-1' }}%</h4>
+        <div class="w-full bg-divider/60 h-1 rounded-full mt-3 overflow-hidden">
+          <div class="bg-primary h-full rounded-full" [style.width.%]="report()?.totales?.cumplimientoPct ?? 0"></div>
+        </div>
+      </div>
+    </div>
+
+      <div class="bg-surface-container-lowest p-8 rounded-3xl border border-outline-variant/60">
+      <div class="flex justify-between items-center mb-8">
+        <div>
+          <h3 class="text-xl font-bold">Comparativa por Concepto (acumulado)</h3>
+          <p class="text-sm text-slate-500">Real vs. Presupuesto (PPTO)</p>
+        </div>
+        <div class="flex gap-4">
+          <div class="flex items-center gap-2 text-xs font-semibold text-on-surface-variant">
+            <span class="w-3 h-3 bg-petro rounded-sm"></span>
+            <span>Real</span>
+          </div>
+          <div class="flex items-center gap-2 text-xs font-semibold text-on-surface-variant">
+            <span class="w-3 h-3 bg-custom-teal/30 rounded-sm"></span>
+            <span>PPTO</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <!-- Izquierda: barras (padre + hijas) -->
+        <div class="space-y-6">
+          @for (row of barsView(); track row.item.id + '_' + row.isChild) {
+            <div
+              class="space-y-2 rounded-2xl transition-colors"
+              [ngClass]="
+                row.isChild
+                  ? 'pl-8'
+                  : expandedConcept() === row.item.concepto
+                    ? 'bg-custom-teal/5 ring-1 ring-custom-teal/25 p-3'
+                    : 'hover:bg-custom-teal/5 p-3'
+              "
+              (click)="onBarClick(row)"
+              [style.cursor]="'pointer'"
+            >
+              <div class="flex justify-between items-center">
+                <div class="flex items-center gap-2">
+                  <span
+                    class="material-symbols-outlined text-slate-400"
+                    [ngClass]="row.isChild ? 'text-[18px]' : 'text-[20px]'"
+                    *ngIf="!row.isChild"
+                  >
+                    {{ expandedConcept() === row.item.concepto ? 'expand_less' : 'expand_more' }}
+                  </span>
+                  <span
+                    class="hover:text-primary transition-colors"
+                    [ngClass]="row.isChild ? 'text-xs font-semibold text-slate-500' : 'text-sm font-extrabold text-slate-700'"
+                  >
+                    {{ row.item.concepto }}
+                  </span>
+                  @if (selectedItemId() === row.item.id) {
+                    <span class="text-[10px] font-bold px-2 py-1 rounded-full bg-custom-teal/10 text-teal-hover">SELECCIONADO</span>
+                  }
+                </div>
+              </div>
+
+              <div class="relative flex items-center gap-4" [ngClass]="row.isChild ? 'h-10 opacity-90' : 'h-12'">
+                <div
+                  class="flex-1 h-full rounded-xl overflow-hidden relative bg-[linear-gradient(to_bottom,rgba(229,231,235,0.35)_0%,rgba(229,231,235,0.35)_50.5%,rgba(229,231,235,0.60)_50.5%,rgba(229,231,235,0.60)_100%)]"
+                >
+                  <div
+                    class="absolute top-0 left-0 h-1/2 rounded-r-lg"
+                    [ngClass]="
+                      (row.isChild ? 'bg-teal-accent/75' : 'bg-petro') + ' ' + overClass(row.item.eje, denomFor(row.item))
+                    "
+                    [style.width.%]="barPct(row.item.eje, denomFor(row.item))"
+                    [style.min-width.px]="barMinPx(row.item.eje, denomFor(row.item))"
+                  ></div>
+
+                  <div
+                    class="absolute bottom-0 left-0 h-1/2 rounded-r-lg"
+                    [ngClass]="row.isChild ? 'bg-custom-teal/20' : 'bg-custom-teal/30'"
+                    [style.width.%]="barPct(row.item.ppto, denomFor(row.item))"
+                    [style.min-width.px]="barMinPx(row.item.ppto, denomFor(row.item))"
+                  ></div>
+                </div>
+
+                <div class="w-40 text-right">
+                  <p class="font-bold" [ngClass]="row.isChild ? 'text-xs' : 'text-sm'">{{ n1(mmValue(row.item.eje)) }}M</p>
+                  <p class="text-slate-400 text-[10px]">PPTO {{ n1(mmValue(row.item.ppto)) }}M</p>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+
+        <!-- Derecha: gráfico combinado -->
+        <app-concept-chart [series]="selectedSeries()" [title]="selectedTitle()"></app-concept-chart>
+      </div>
+    </div>
+
+  </div>
+</main>

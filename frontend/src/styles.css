@@ -1,0 +1,33 @@
+/* You can add global styles to this file, and also import other style files */
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+body {
+  font-family: 'Inter', sans-serif;
+}
+
+:root {
+  --custom-teal: #00a99d;
+  --custom-bg: #f0fafa;
+  --custom-sidebar: #f8f8f8;
+  --custom-gradient: linear-gradient(90deg, #2d5a70 0%, #0d9488 48%, #155e75 100%);
+  --custom-gradient-cta: linear-gradient(90deg, #2d5a70, #0d9488);
+}
+
+h1,
+h2,
+h3,
+.font-headline {
+  font-family: 'Manrope', sans-serif;
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(20px);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

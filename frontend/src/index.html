@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Panel de Control de Inversiones</title>
+  <base href="/">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+  <script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          colors: {
+            // Marca
+            "custom-teal": "#00A99D",
+            "petro": "#2D5A70",
+            "teal-accent": "#0D9488",
+            "deep-teal": "#155E75",
+            "teal-hover": "#0F766E",
+
+            // Fondos / superficies
+            "custom-bg": "#F0FAFA",
+            "custom-sidebar": "#F8F8F8",
+            "surface": "#F8FAFC",
+            "surface-container": "#F8FAFC",
+            "surface-container-low": "#FFFFFF",
+            "surface-container-lowest": "#FFFFFF",
+
+            // Texto
+            "on-surface": "#1F2937",
+            "on-background": "#1F2937",
+            "on-surface-variant": "#334155",
+
+            // Bordes
+            "outline-variant": "#CBD5E1",
+            "outline": "#94A3B8",
+            "divider": "#E5E7EB",
+
+            // Semánticos (compatibilidad con el template actual)
+            "primary": "#00A99D",
+            "on-primary": "#FFFFFF",
+            "background": "#F0FAFA",
+
+            // Estados
+            "success": "#059669",
+            "success-container": "#D1FAE5",
+            "warning": "#92400E",
+            "warning-container": "#FEF3C7",
+            "error": "#DC2626",
+            "error-strong": "#B91C1C",
+            "error-container": "#FEF2F2",
+            "error-outline": "#FECACA",
+            "info": "#1E40AF",
+            "info-container": "#DBEAFE"
+          },
+          fontFamily: {
+            "headline": ["Manrope"],
+            "body": ["Inter"],
+            "label": ["Inter"]
+          },
+          borderRadius: { "DEFAULT": "0.125rem", "lg": "0.25rem", "xl": "0.5rem", "full": "0.75rem" }
+        }
+      }
+    }
+  </script>
+</head>
+<body>
+  <app-root></app-root>
+</body>
+</html>
