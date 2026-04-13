@@ -175,7 +175,7 @@ export class App {
       error: (err: HttpErrorResponse) => {
         const hint =
           err.status === 0
-            ? ' No hay conexión con el API: arranque el backend de Dashboard inversiones (carpeta backend) con el mismo puerto que proxy.conf.json (p. ej. python -m uvicorn app:app --reload --port 8000).'
+            ? ' No hay conexión con el API: arranque el backend (carpeta backend) y use el mismo puerto que `frontend/proxy.conf.json` → target (p. ej. python -m uvicorn app:app --reload --port 8001).'
             : '';
         const detail =
           typeof err.error?.detail === 'string'
