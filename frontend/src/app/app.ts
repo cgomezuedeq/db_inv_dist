@@ -19,7 +19,7 @@ export class App {
 
   protected readonly months = signal<MonthOption[]>([]);
   protected readonly selectedMonth = signal<string>('Dic');
-  /** Solo para la carga a SQL Server; el reporte sigue usando EJE.xlsx / PPTO.xlsx locales. */
+  /** Solo para la carga a SQL Server; el reporte usa los Excel configurados en el backend (p. ej. EJE_2026 / PPTO_2026). */
   protected readonly uploadYear = signal<number>(new Date().getFullYear());
   protected readonly yearOptions = Array.from({ length: 20 }, (_, i) => new Date().getFullYear() - 10 + i);
   protected readonly report = signal<ReportResponse | null>(null);
@@ -28,96 +28,102 @@ export class App {
   protected readonly uploadLoading = signal<boolean>(false);
   protected readonly uploadMessage = signal<string | null>(null);
 
-  protected readonly expandedConcept = signal<string | null>(null);
+  /** Subárboles abiertos en la lista (valores IND). */
+  protected readonly expandedInds = signal<Set<string>>(new Set());
+  /** Raíz del bloque mostrado (IND de primer nivel: sin padre en el archivo). */
+  protected readonly selectedRootInd = signal<string | null>(null);
   protected readonly selectedItemId = signal<number | null>(null);
   protected readonly selectedSeries = signal<SeriesResponse | null>(null);
   protected readonly selectedTitle = signal<string | null>(null);
-  protected readonly totalItemId = computed(() => this.report()?.items?.[0]?.id ?? 0);
 
-  private readonly indentToLevel = computed(() => {
-    const items = this.report()?.items ?? [];
-    const uniq = Array.from(new Set(items.map((i) => i.indent ?? 0))).sort((a, b) => a - b);
-    const map = new Map<number, number>();
-    uniq.forEach((v, idx) => map.set(v, idx + 1));
-    return map;
-  });
-
-  private levelOf(item: ReportItem): number {
-    const lvl = (item as unknown as { nivel?: number }).nivel;
-    if (typeof lvl === 'number' && isFinite(lvl)) return lvl;
-    return this.indentToLevel().get(item.indent ?? 0) ?? 1;
-  }
-
-  private readonly level2ConceptsNorm = new Set(
-    ['Reposición y Modernización', 'Expansión Redes', 'Subestaciones', 'Consolidación de Centros de Control'].map((s) =>
-      this.normText(s)
-    )
+  /** Filas con IND de primer nivel (varios árboles en el mismo Excel). */
+  protected readonly topLevelParents = computed(() =>
+    (this.report()?.items ?? []).filter((i) => i.parentInd == null)
   );
 
-  private normText(s: string): string {
-    return (s ?? '')
-      .trim()
-      .toLowerCase()
-      .replaceAll('�', '')
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/\s+/g, ' ');
+  /** Totales KPI y serie «resumen» del bloque elegido (fila del IND raíz). */
+  protected readonly viewTotals = computed(() => {
+    const r = this.report();
+    const ind = this.selectedRootInd();
+    if (!r?.items?.length) {
+      return null;
+    }
+    const root = ind != null ? r.items.find((x) => x.ind === ind) : r.items[0];
+    if (!root) {
+      return r.totales;
+    }
+    const ppto = isFinite(root.ppto) ? root.ppto : 0;
+    const eje = isFinite(root.eje) ? root.eje : 0;
+    return {
+      eje,
+      ppto,
+      ejeAnual: root.ejeAnual,
+      pptoAnual: root.pptoAnual,
+      desviacionPct: root.desviacionPct,
+      cumplimientoPct: ppto > 0 ? (eje / ppto) * 100 : 0
+    };
+  });
+
+  protected readonly totalItemId = computed(() => {
+    const items = this.report()?.items ?? [];
+    const ind = this.selectedRootInd();
+    if (ind == null) {
+      return items[0]?.id ?? 0;
+    }
+    return items.find((x) => x.ind === ind)?.id ?? items[0]?.id ?? 0;
+  });
+
+  /** Hijos por IND padre (solo nodos con `parentInd` definido). */
+  private readonly childrenByParent = computed(() => {
+    const m = new Map<string, ReportItem[]>();
+    for (const it of this.report()?.items ?? []) {
+      const p = it.parentInd;
+      if (p == null || p === '') {
+        continue;
+      }
+      const k = p;
+      if (!m.has(k)) {
+        m.set(k, []);
+      }
+      m.get(k)!.push(it);
+    }
+    return m;
+  });
+
+  protected hasChildren(ind: string): boolean {
+    return (this.childrenByParent().get(ind)?.length ?? 0) > 0;
   }
 
-  protected readonly visibleItems = computed(() => {
-    const r = this.report();
-    return (r?.items ?? []).slice(0);
-  });
+  /** Barras: hijas/nietas del IND raíz elegido (sin repetir la fila raíz). */
+  protected readonly barsView = computed(() => {
+    const rootInd = this.selectedRootInd();
+    const expanded = this.expandedInds();
+    const byParent = this.childrenByParent();
+    const out: Array<{ item: ReportItem; isChild: boolean; indentPx: number }> = [];
 
-  private readonly level2Groups = computed(() => {
-    const items = this.report()?.items ?? [];
-    const groups: { parent: ReportItem; children: ReportItem[] }[] = [];
+    if (rootInd == null) {
+      return out;
+    }
 
-    const hasUsefulLevels = items.some((it) => this.levelOf(it) !== 1) || this.indentToLevel().size > 1;
-    const seenParents = new Set<string>();
-
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const isParent = hasUsefulLevels
-        ? this.levelOf(it) === 2
-        : i > 0 && this.level2ConceptsNorm.has(this.normText(it.concepto));
-      if (!isParent) continue;
-
-      const parentKey = this.normText(it.concepto);
-      if (seenParents.has(parentKey)) continue;
-      seenParents.add(parentKey);
-
-      const children: ReportItem[] = [];
-      for (let j = i + 1; j < items.length; j++) {
-        const nxt = items[j];
-        if (hasUsefulLevels) {
-          const nxtLvl = this.levelOf(nxt);
-          if (nxtLvl <= 2) break;
-          if (nxtLvl === 3) children.push(nxt);
-        } else {
-          const nxtKey = this.normText(nxt.concepto);
-          const nxtIsParent = this.level2ConceptsNorm.has(nxtKey);
-          // Si el Excel repite el mismo concepto padre (ej: "Expansión Redes"),
-          // lo tratamos como parte del bloque (hija) y NO como corte.
-          const nxtIsDifferentParent = nxtIsParent && nxtKey !== parentKey;
-          if (nxtIsDifferentParent) break;
-          children.push(nxt);
+    const walk = (parentInd: string, baseIndent: number) => {
+      const kids = byParent.get(parentInd);
+      if (!kids?.length) {
+        return;
+      }
+      const directOfRoot = parentInd === rootInd;
+      for (const child of kids) {
+        out.push({
+          item: child,
+          isChild: !directOfRoot,
+          indentPx: baseIndent
+        });
+        if (expanded.has(child.ind)) {
+          walk(child.ind, baseIndent + (directOfRoot ? 24 : 16));
         }
       }
-      groups.push({ parent: it, children });
-    }
-    return groups;
-  });
+    };
 
-  protected readonly barsView = computed(() => {
-    const exp = this.expandedConcept();
-    const out: Array<{ item: ReportItem; isChild: boolean }> = [];
-    for (const g of this.level2Groups()) {
-      out.push({ item: g.parent, isChild: false });
-      if (exp && g.parent.concepto === exp) {
-        for (const c of g.children) out.push({ item: c, isChild: true });
-      }
-    }
+    walk(rootInd, 0);
     return out;
   });
 
@@ -130,6 +136,17 @@ export class App {
   protected onUploadYearChange(ev: Event) {
     const el = ev.target as HTMLSelectElement;
     this.uploadYear.set(Number(el.value));
+  }
+
+  protected onRootBlockChange(ev: Event) {
+    const el = ev.target as HTMLSelectElement;
+    const ind = el.value;
+    this.selectedRootInd.set(ind);
+    this.expandedInds.set(new Set());
+    const id = this.report()?.items?.find((x) => x.ind === ind)?.id ?? null;
+    if (id != null) {
+      this.selectForChart(id, false);
+    }
   }
 
   protected onDbExcelSelected(ev: Event) {
@@ -167,9 +184,14 @@ export class App {
     this.api.getReport(m).subscribe({
       next: (r) => {
         this.report.set(r);
+        this.expandedInds.set(new Set());
+        const roots = r.items?.filter((i) => i.parentInd == null) ?? [];
+        const firstInd = roots[0]?.ind ?? r.items?.[0]?.ind ?? null;
+        this.selectedRootInd.set(firstInd);
         this.loading.set(false);
         const current = this.selectedItemId();
-        const fallback = r.items?.[0]?.id ?? null;
+        const blockRootId = firstInd != null ? r.items?.find((x) => x.ind === firstInd)?.id : r.items?.[0]?.id;
+        const fallback = blockRootId ?? r.items?.[0]?.id ?? null;
         this.selectForChart(current ?? fallback, false);
       },
       error: (err: HttpErrorResponse) => {
@@ -207,17 +229,20 @@ export class App {
     return new Intl.NumberFormat('es-CO', { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(v);
   }
 
-  protected toggleExpand(concepto: string) {
-    this.expandedConcept.set(this.expandedConcept() === concepto ? null : concepto);
+  protected toggleExpandInd(ind: string) {
+    const next = new Set(this.expandedInds());
+    if (next.has(ind)) {
+      next.delete(ind);
+    } else {
+      next.add(ind);
+    }
+    this.expandedInds.set(next);
   }
 
-  protected onBarClick(row: { item: ReportItem; isChild: boolean }) {
-    if (row.isChild) {
-      this.selectForChart(row.item.id);
-      return;
+  protected onBarClick(row: { item: ReportItem; isChild: boolean; indentPx: number }) {
+    if (this.hasChildren(row.item.ind)) {
+      this.toggleExpandInd(row.item.ind);
     }
-
-    this.toggleExpand(row.item.concepto);
     this.selectForChart(row.item.id);
   }
 
@@ -230,7 +255,9 @@ export class App {
     if (userInitiated) this.selectedItemId.set(id);
     const items = this.report()?.items ?? [];
     const it = items.find((x) => x.id === id);
-    this.selectedTitle.set(id === this.totalItemId() ? 'Total' : (it?.concepto ?? null));
+    const rootIt = items.find((x) => x.id === this.totalItemId());
+    const rootLabel = rootIt?.concepto ?? 'Bloque';
+    this.selectedTitle.set(id === this.totalItemId() ? rootLabel : (it?.concepto ?? null));
     this.api.getSeries(id).subscribe({
       next: (s) => this.selectedSeries.set(s),
       error: () => this.selectedSeries.set(null)
@@ -258,7 +285,7 @@ export class App {
     if (month === 'Dic') return ppto;
 
     // Estimación del anual del concepto a partir de la participación del acumulado del mes.
-    const tot = this.report()?.totales as unknown as { pptoAnual?: number; ppto?: number } | undefined;
+    const tot = (this.viewTotals() ?? this.report()?.totales) as unknown as { pptoAnual?: number; ppto?: number } | undefined;
     const totalAnual = isFinite(tot?.pptoAnual ?? NaN) ? (tot?.pptoAnual ?? 0) : 0;
     const totalAcum = isFinite(tot?.ppto ?? NaN) ? (tot?.ppto ?? 0) : 0;
 

@@ -11,6 +11,11 @@ export type ReportTotals = {
 
 export type ReportItem = {
   id: number;
+  /** Codificación jerárquica (p. ej. 1, 1.1, 1.1.1). */
+  ind: string;
+  /** Padre inmediato en la jerarquía; `null` solo en la raíz IND «1». */
+  parentInd: string | null;
+  /** Texto del Excel (columna DETALLE). */
   concepto: string;
   indent: number;
   nivel: number;

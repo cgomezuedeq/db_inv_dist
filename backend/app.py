@@ -10,12 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import excel_store
 from db import get_engine
-from excel_store import MONTHS_ES, build_report, build_series, load_sources
+from excel_store import MONTHS_ES, build_report, build_series, load_sources, sanitize_dataframe_for_sql
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_EJE = str((BASE_DIR.parent / "EJE.xlsx").resolve())
-DEFAULT_PPTO = str((BASE_DIR.parent / "PPTO.xlsx").resolve())
+DEFAULT_EJE = str((BASE_DIR.parent / "EJE_2026.xlsx").resolve())
+DEFAULT_PPTO = str((BASE_DIR.parent / "PPTO_2026.xlsx").resolve())
 
 
 def _sources() -> tuple[str, str]:
@@ -36,6 +36,7 @@ def _excel_bytes_to_sql(contents: bytes, year: int) -> list[str]:
     for sheet in ("PPTO", "EJE"):
         bio.seek(0)
         df = pd.read_excel(bio, sheet_name=sheet)
+        df = sanitize_dataframe_for_sql(df)
         table = f"sd_inv_{year}_{sheet}"
         df.to_sql(table, con=engine, if_exists="replace", index=False, schema="dbo")
         tables.append(table)

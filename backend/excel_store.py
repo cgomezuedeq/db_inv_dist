@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
 from functools import lru_cache
 from pathlib import Path
-import unicodedata
 
 import pandas as pd
 
@@ -23,46 +22,158 @@ MONTHS_ES = [
     ("Dic", "Diciembre"),
 ]
 
-def _norm_text(s: str) -> str:
-    s = (s or "").strip().lower()
-    # "Reposici�n" (mojibake) cae aquí; quitamos caracteres no ASCII útiles.
-    s = s.replace("�", "")
-    s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
-    return " ".join(s.split())
-
-
-LEVEL2_CONCEPTS_NORM = {
-    _norm_text("Reposición y Modernización"),
-    _norm_text("Expansión Redes"),
-    _norm_text("Subestaciones"),
-    _norm_text("Consolidación de Centros de Control"),
+# Corregir error histórico: en Excel el mes de abril suele ser «Ab».
+_MONTH_HEADER_ALIASES: dict[str, str] = {
+    "abr": "Ab",
+    "ab": "Ab",
+    "ago": "Ago",
 }
 
 
-@dataclass(frozen=True)
-class ExcelSources:
-    eje_path: Path
-    ppto_path: Path
+def _normalize_month_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename: dict[str, str] = {}
+    for c in df.columns:
+        k = str(c).strip()
+        lk = k.lower()
+        if lk in _MONTH_HEADER_ALIASES:
+            target = _MONTH_HEADER_ALIASES[lk]
+            if target in df.columns and target != k:
+                continue
+            rename[k] = target
+    return df.rename(columns=rename) if rename else df
+
+
+def _find_column(df: pd.DataFrame, *candidates: str) -> str | None:
+    low = {str(c).strip().lower(): c for c in df.columns}
+    for name in candidates:
+        if name.lower() in low:
+            return str(low[name.lower()])
+    return None
+
+
+def _normalize_ind_raw(raw: object) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, bool):
+        return "1" if raw else "0"
+    if isinstance(raw, (int,)) and not isinstance(raw, bool):
+        return str(int(raw))
+    if isinstance(raw, float):
+        if pd.isna(raw) or math.isnan(raw):
+            return ""
+        f = float(raw)
+        if abs(f - round(f)) < 1e-9:
+            return str(int(round(f)))
+        s = ("%f" % f).rstrip("0").rstrip(".")
+        return s
+    s = str(raw).strip()
+    return s
+
+
+def _parent_ind(ind: str) -> str | None:
+    if not ind or "." not in ind:
+        return None
+    parts = [p for p in ind.split(".") if p != ""]
+    if len(parts) <= 1:
+        return None
+    return ".".join(parts[:-1])
+
+
+def _nivel_from_ind(ind: str) -> int:
+    if not ind:
+        return 1
+    parts = [p for p in ind.split(".") if p != ""]
+    return max(1, len(parts))
+
+
+def _detalle_cell_str(raw: object) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, float) and pd.isna(raw):
+        return ""
+    return str(raw).strip()
+
+
+def _resolve_ind_det_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    """
+    Localiza columnas de jerarquía y descripción.
+
+    - Formato nuevo: ``IND``, ``DETALLE``.
+    - Formato legacy (Excel sin encabezados): ``Unnamed: 0`` = códigos, ``Unnamed: 1`` = texto.
+    """
+    col_ind = _find_column(df, "IND", "ind")
+    col_det = _find_column(df, "DETALLE", "Detalle", "detalle")
+
+    cols = list(df.columns)
+    if not col_ind:
+        for name in ("Unnamed: 0",):
+            if name in cols:
+                col_ind = name
+                break
+        if not col_ind and cols:
+            c0 = str(cols[0])
+            if c0.startswith("Unnamed:") or c0.lower() == "ind":
+                col_ind = cols[0]
+
+    if not col_det:
+        for name in ("Unnamed: 1",):
+            if name in cols:
+                col_det = name
+                break
+        if not col_det and len(cols) > 1:
+            c1 = str(cols[1])
+            if c1.startswith("Unnamed:") or c1.lower() in ("detalle", "concepto"):
+                col_det = cols[1]
+
+    return col_ind, col_det
+
+
+def sanitize_dataframe_for_sql(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fuerza columnas de jerarquía y descripción como texto antes de ``to_sql``.
+    Así códigos como 1.1 no quedan como ``float`` (1.1000000000000001) en SQL Server.
+    """
+    out = df.copy()
+    col_ind, col_det = _resolve_ind_det_columns(out)
+    if col_ind:
+        out[col_ind] = out[col_ind].map(_normalize_ind_raw)
+    if col_det:
+        out[col_det] = out[col_det].map(_detalle_cell_str)
+    return out
 
 
 def _read_month_matrix(path: Path, sheet_name: str) -> pd.DataFrame:
     df = pd.read_excel(path, sheet_name=sheet_name)
+    df = _normalize_month_columns(df)
 
-    first_col = df.columns[0]
-    df = df.rename(columns={first_col: "concepto_raw"})
+    col_ind, col_det = _resolve_ind_det_columns(df)
 
-    keep_cols = ["concepto_raw"] + [m for (m, _) in MONTHS_ES if m in df.columns]
-    df = df[keep_cols].copy()
+    if not col_ind or not col_det:
+        raise ValueError(
+            f"Se requieren columnas de jerarquía y descripción (IND/DETALLE o Unnamed: 0/Unnamed: 1) "
+            f"en la hoja «{sheet_name}» de {path.name}. "
+            f"Columnas encontradas: {list(df.columns)}"
+        )
 
-    df["concepto_raw"] = df["concepto_raw"].astype(str)
-    df["concepto"] = df["concepto_raw"].str.strip()
-    df["indent"] = df["concepto_raw"].str.len() - df["concepto_raw"].str.lstrip().str.len()
+    month_cols = [m for (m, _) in MONTHS_ES if m in df.columns]
+    if not month_cols:
+        raise ValueError(
+            f"No se encontraron columnas de meses en «{sheet_name}» de {path.name}. "
+            f"Se esperan claves como: Ene, Feb, …, Dic."
+        )
 
-    for m, _ in MONTHS_ES:
-        if m in df.columns:
-            df[m] = pd.to_numeric(df[m], errors="coerce").fillna(0.0)
+    out = df[[col_ind, col_det] + month_cols].copy()
+    out = out.rename(columns={col_ind: "ind_raw", col_det: "detalle_raw"})
 
-    return df
+    out["ind"] = out["ind_raw"].map(_normalize_ind_raw)
+    out["concepto"] = out["detalle_raw"].map(lambda x: str(x).strip() if x is not None and not (isinstance(x, float) and pd.isna(x)) else "")
+    out["indent"] = (out["ind"].map(_nivel_from_ind) - 1) * 4
+    out["nivel"] = out["ind"].map(_nivel_from_ind)
+
+    for m in month_cols:
+        out[m] = pd.to_numeric(out[m], errors="coerce").fillna(0.0)
+
+    return out
 
 
 @lru_cache(maxsize=8)
@@ -92,56 +203,25 @@ def accumulated(df: pd.DataFrame, month_key: str) -> pd.Series:
     return df[cols].sum(axis=1)
 
 
-def _infer_levels_from_indent(indent: pd.Series) -> pd.Series:
-    # Normaliza niveles según valores únicos de sangría en el archivo.
-    # Ejemplo típico: [0, 14, 24] => niveles [1, 2, 3]
-    uniq = sorted({int(x) for x in indent.fillna(0).astype(int).tolist()})
-    mapping = {v: i + 1 for i, v in enumerate(uniq)}
-    return indent.fillna(0).astype(int).map(mapping).fillna(1).astype(int)
-
-
-def _infer_levels_from_concepts(concepto: pd.Series) -> pd.Series:
-    # Fallback cuando el Excel no trae sangrías (celdas sin espacios al inicio).
-    # Regla: primera fila = nivel 1; las filas cuyo concepto esté en LEVEL2_CONCEPTS
-    # se consideran nivel 2 (padres) y las filas entre padres son nivel 3.
-    levels: list[int] = []
-    prev_parent: str | None = None
-
-    for idx, raw in enumerate(concepto.astype(str).tolist()):
-        c = raw.strip()
-        c_norm = _norm_text(c)
-        if idx == 0:
-            levels.append(1)
-            continue
-
-        if c_norm in LEVEL2_CONCEPTS_NORM and c != prev_parent:
-            levels.append(2)
-            prev_parent = c
-        else:
-            levels.append(3 if prev_parent is not None else 2)
-
-    return pd.Series(levels, index=concepto.index)
-
-
 def build_report(eje_df: pd.DataFrame, ppto_df: pd.DataFrame, month_key: str) -> dict:
     eje_acc = accumulated(eje_df, month_key)
     ppto_acc = accumulated(ppto_df, month_key)
     ppto_year = accumulated(ppto_df, "Dic") if "Dic" in available_month_keys(ppto_df) else accumulated(ppto_df, month_key)
     eje_year = accumulated(eje_df, "Dic") if "Dic" in available_month_keys(eje_df) else accumulated(eje_df, month_key)
 
-    eje_items = eje_df[["concepto", "indent"]].copy()
-    eje_items["eje"] = eje_acc
-    eje_items["ppto"] = ppto_acc
-    eje_items["ejeAnual"] = eje_year
-    eje_items["pptoAnual"] = ppto_year
-    inferred = _infer_levels_from_indent(eje_items["indent"])
-    if inferred.nunique(dropna=True) <= 1:
-        inferred = _infer_levels_from_concepts(eje_items["concepto"])
-    eje_items["nivel"] = inferred
+    items_frame = eje_df[["ind", "concepto", "indent", "nivel"]].copy()
+    items_frame["parent_ind"] = items_frame["ind"].map(_parent_ind)
 
-    eje_items["desviacion_pct"] = 0.0
-    mask = eje_items["ppto"] != 0
-    eje_items.loc[mask, "desviacion_pct"] = (eje_items.loc[mask, "eje"] / eje_items.loc[mask, "ppto"] - 1.0) * 100.0
+    items_frame["eje"] = eje_acc.values
+    items_frame["ppto"] = ppto_acc.values
+    items_frame["ejeAnual"] = eje_year.values
+    items_frame["pptoAnual"] = ppto_year.values
+
+    items_frame["desviacion_pct"] = 0.0
+    mask = items_frame["ppto"] != 0
+    items_frame.loc[mask, "desviacion_pct"] = (
+        items_frame.loc[mask, "eje"] / items_frame.loc[mask, "ppto"] - 1.0
+    ) * 100.0
 
     def status(pct: float) -> str:
         if pct <= -5:
@@ -150,17 +230,25 @@ def build_report(eje_df: pd.DataFrame, ppto_df: pd.DataFrame, month_key: str) ->
             return "ESTABLE"
         return "REVISIÓN"
 
-    eje_items["estado"] = eje_items["desviacion_pct"].map(status)
+    items_frame["estado"] = items_frame["desviacion_pct"].map(status)
 
-    total_eje = float(eje_items["eje"].iloc[0]) if len(eje_items) else 0.0
-    total_ppto = float(eje_items["ppto"].iloc[0]) if len(eje_items) else 0.0
-    total_ppto_year = float(ppto_year.iloc[0]) if len(eje_items) else 0.0
-    total_eje_year = float(eje_year.iloc[0]) if len(eje_items) else 0.0
+    total_eje = float(eje_acc.iloc[0]) if len(eje_acc) else 0.0
+    total_ppto = float(ppto_acc.iloc[0]) if len(ppto_acc) else 0.0
+    total_ppto_year = float(ppto_year.iloc[0]) if len(ppto_year) else 0.0
+    total_eje_year = float(eje_year.iloc[0]) if len(eje_year) else 0.0
     cumplimiento = (total_eje / total_ppto * 100.0) if total_ppto else 0.0
+
+    def _parent_json(v: object) -> str | None:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return None
+        s = str(v).strip()
+        return s if s else None
 
     items = [
         {
             "id": int(idx),
+            "ind": str(r.ind),
+            "parentInd": _parent_json(r.parent_ind),
             "concepto": str(r.concepto),
             "indent": int(r.indent),
             "nivel": int(r.nivel),
@@ -171,11 +259,11 @@ def build_report(eje_df: pd.DataFrame, ppto_df: pd.DataFrame, month_key: str) ->
             "desviacionPct": float(r.desviacion_pct),
             "estado": str(r.estado),
         }
-        for idx, r in enumerate(eje_items.itertuples(index=False))
+        for idx, r in enumerate(items_frame.itertuples(index=False))
     ]
 
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "mes": month_key,
         "mesLabel": month_label(month_key),
         "totales": {
@@ -201,9 +289,6 @@ def build_series(eje_df: pd.DataFrame, ppto_df: pd.DataFrame, row_id: int) -> di
     eje_row = eje_df.iloc[row_id]
     ppto_row = ppto_df.iloc[row_id]
 
-    # Para la visualización, evitamos valores negativos (ajustes contables) que
-    # distorsionan la escala y confunden al usuario. Si necesitas verlos, lo
-    # manejamos como un toggle más adelante.
     eje_monthly = [max(0.0, float(eje_row.get(m, 0.0) or 0.0)) for m in months]
     ppto_monthly = [max(0.0, float(ppto_row.get(m, 0.0) or 0.0)) for m in months]
 
@@ -224,4 +309,3 @@ def build_series(eje_df: pd.DataFrame, ppto_df: pd.DataFrame, row_id: int) -> di
         "monthly": {"eje": eje_monthly, "ppto": ppto_monthly},
         "accumulated": {"eje": eje_acc, "ppto": ppto_acc},
     }
-
