@@ -11,19 +11,19 @@ export class ApiService {
     return this.http.get<MonthOption[]>('/api/v1/months');
   }
 
-  getReport(monthKey: string) {
+  getReport(monthKey: string, year: number) {
     return this.http.get<ReportResponse>('/api/v1/report', {
-      params: { month: monthKey }
+      params: { month: monthKey, year: String(year) }
     });
   }
 
-  getSeries(id: number) {
+  getSeries(id: number, year: number) {
     return this.http.get<SeriesResponse>('/api/v1/series', {
-      params: { id }
+      params: { id: String(id), year: String(year) }
     });
   }
 
-  /** Carga hojas PPTO y EJE del Excel a SQL Server (no afecta el reporte del dashboard). */
+  /** Carga hojas PPTO y EJE del Excel a SQL Server (tablas dbo.sd_inv_{año}_*). */
   uploadExcelToDb(year: number, file: File) {
     const fd = new FormData();
     fd.append('year', String(year));

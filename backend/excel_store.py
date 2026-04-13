@@ -142,31 +142,34 @@ def sanitize_dataframe_for_sql(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _read_month_matrix(path: Path, sheet_name: str) -> pd.DataFrame:
-    df = pd.read_excel(path, sheet_name=sheet_name)
-    df = _normalize_month_columns(df)
+def month_matrix_from_dataframe(df: pd.DataFrame, source_label: str) -> pd.DataFrame:
+    """
+    Convierte un DataFrame crudo (Excel o filas SQL) al formato interno del reporte.
+    """
+    df = _normalize_month_columns(df.copy())
 
     col_ind, col_det = _resolve_ind_det_columns(df)
 
     if not col_ind or not col_det:
         raise ValueError(
             f"Se requieren columnas de jerarquía y descripción (IND/DETALLE o Unnamed: 0/Unnamed: 1) "
-            f"en la hoja «{sheet_name}» de {path.name}. "
-            f"Columnas encontradas: {list(df.columns)}"
+            f"en {source_label}. Columnas encontradas: {list(df.columns)}"
         )
 
     month_cols = [m for (m, _) in MONTHS_ES if m in df.columns]
     if not month_cols:
         raise ValueError(
-            f"No se encontraron columnas de meses en «{sheet_name}» de {path.name}. "
-            f"Se esperan claves como: Ene, Feb, …, Dic."
+            f"No se encontraron columnas de meses en {source_label}. "
+            f"Se esperan claves como: Ene, Feb, …, Dic. Columnas: {list(df.columns)}"
         )
 
     out = df[[col_ind, col_det] + month_cols].copy()
     out = out.rename(columns={col_ind: "ind_raw", col_det: "detalle_raw"})
 
     out["ind"] = out["ind_raw"].map(_normalize_ind_raw)
-    out["concepto"] = out["detalle_raw"].map(lambda x: str(x).strip() if x is not None and not (isinstance(x, float) and pd.isna(x)) else "")
+    out["concepto"] = out["detalle_raw"].map(
+        lambda x: str(x).strip() if x is not None and not (isinstance(x, float) and pd.isna(x)) else ""
+    )
     out["indent"] = (out["ind"].map(_nivel_from_ind) - 1) * 4
     out["nivel"] = out["ind"].map(_nivel_from_ind)
 
@@ -174,6 +177,39 @@ def _read_month_matrix(path: Path, sheet_name: str) -> pd.DataFrame:
         out[m] = pd.to_numeric(out[m], errors="coerce").fillna(0.0)
 
     return out
+
+
+def _read_month_matrix(path: Path, sheet_name: str) -> pd.DataFrame:
+    df = pd.read_excel(path, sheet_name=sheet_name)
+    return month_matrix_from_dataframe(df, f"{path.name} «{sheet_name}»")
+
+
+def load_sources_from_db(engine, year: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Lee ``dbo.sd_inv_{año}_EJE`` y ``dbo.sd_inv_{año}_PPTO``.
+    """
+    eje = _read_month_matrix_from_db(engine, year, "EJE")
+    ppto = _read_month_matrix_from_db(engine, year, "PPTO")
+    return eje, ppto
+
+
+def _read_month_matrix_from_db(engine, year: int, sheet: str) -> pd.DataFrame:
+    if sheet not in ("EJE", "PPTO"):
+        raise ValueError("La hoja debe ser EJE o PPTO.")
+    table = f"sd_inv_{year}_{sheet}"
+    from sqlalchemy import text
+
+    q = text(f"SELECT * FROM [dbo].[{table}]")
+    try:
+        df = pd.read_sql(q, con=engine)
+    except Exception as exc:
+        raise ValueError(
+            f"No se pudo leer dbo.{table}. Cargue un Excel para ese año o verifique permisos y conexión. "
+            f"Detalle: {exc}"
+        ) from exc
+    if df.empty:
+        raise ValueError(f"La tabla dbo.{table} no tiene filas. Cargue datos con «Cargar Excel a BD».")
+    return month_matrix_from_dataframe(df, f"dbo.{table}")
 
 
 @lru_cache(maxsize=8)

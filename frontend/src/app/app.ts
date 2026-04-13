@@ -19,9 +19,16 @@ export class App {
 
   protected readonly months = signal<MonthOption[]>([]);
   protected readonly selectedMonth = signal<string>('Dic');
-  /** Solo para la carga a SQL Server; el reporte usa los Excel configurados en el backend (p. ej. EJE_2026 / PPTO_2026). */
-  protected readonly uploadYear = signal<number>(new Date().getFullYear());
-  protected readonly yearOptions = Array.from({ length: 20 }, (_, i) => new Date().getFullYear() - 10 + i);
+  /** 2024 … año en curso (mismo orden que el ``<select>``). */
+  protected readonly yearOptions = Array.from(
+    { length: new Date().getFullYear() - 2024 + 1 },
+    (_, i) => 2024 + i
+  );
+
+  /** Año de las tablas SQL ``dbo.sd_inv_{año}_EJE`` / ``PPTO`` (y año de carga Excel). Siempre inicia en el año en curso. */
+  protected readonly uploadYear = signal<number>(
+    this.yearOptions.length ? this.yearOptions[this.yearOptions.length - 1]! : new Date().getFullYear()
+  );
   protected readonly report = signal<ReportResponse | null>(null);
   protected readonly loading = signal<boolean>(false);
   protected readonly error = signal<string | null>(null);
@@ -136,6 +143,7 @@ export class App {
   protected onUploadYearChange(ev: Event) {
     const el = ev.target as HTMLSelectElement;
     this.uploadYear.set(Number(el.value));
+    this.refresh();
   }
 
   protected onRootBlockChange(ev: Event) {
@@ -161,6 +169,7 @@ export class App {
       next: (res) => {
         this.uploadMessage.set(`Carga en SQL correcta: ${res.tables.join(', ')}`);
         this.uploadLoading.set(false);
+        this.refresh();
       },
       error: (err: HttpErrorResponse) => {
         const d = err.error?.detail;
@@ -181,7 +190,7 @@ export class App {
     const m = 'Dic';
     this.loading.set(true);
     this.error.set(null);
-    this.api.getReport(m).subscribe({
+    this.api.getReport(m, this.uploadYear()).subscribe({
       next: (r) => {
         this.report.set(r);
         this.expandedInds.set(new Set());
@@ -258,7 +267,7 @@ export class App {
     const rootIt = items.find((x) => x.id === this.totalItemId());
     const rootLabel = rootIt?.concepto ?? 'Bloque';
     this.selectedTitle.set(id === this.totalItemId() ? rootLabel : (it?.concepto ?? null));
-    this.api.getSeries(id).subscribe({
+    this.api.getSeries(id, this.uploadYear()).subscribe({
       next: (s) => this.selectedSeries.set(s),
       error: () => this.selectedSeries.set(null)
     });

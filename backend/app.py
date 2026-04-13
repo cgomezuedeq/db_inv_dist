@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
+from datetime import datetime
 from io import BytesIO
-from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -10,18 +9,23 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import excel_store
 from db import get_engine
-from excel_store import MONTHS_ES, build_report, build_series, load_sources, sanitize_dataframe_for_sql
+from excel_store import MONTHS_ES, build_report, build_series, load_sources_from_db, sanitize_dataframe_for_sql
+
+MIN_DATA_YEAR = 2024
 
 
-BASE_DIR = Path(__file__).resolve().parent
-DEFAULT_EJE = str((BASE_DIR.parent / "EJE_2026.xlsx").resolve())
-DEFAULT_PPTO = str((BASE_DIR.parent / "PPTO_2026.xlsx").resolve())
+def _current_year() -> int:
+    return datetime.now().year
 
 
-def _sources() -> tuple[str, str]:
-    eje = os.getenv("EJE_XLSX", DEFAULT_EJE)
-    ppto = os.getenv("PPTO_XLSX", DEFAULT_PPTO)
-    return eje, ppto
+def _validate_year(year: int) -> int:
+    cy = _current_year()
+    if year < MIN_DATA_YEAR or year > cy:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El año debe estar entre {MIN_DATA_YEAR} y {cy}.",
+        )
+    return year
 
 
 def _excel_bytes_to_sql(contents: bytes, year: int) -> list[str]:
@@ -39,7 +43,7 @@ def _excel_bytes_to_sql(contents: bytes, year: int) -> list[str]:
         df = sanitize_dataframe_for_sql(df)
         table = f"sd_inv_{year}_{sheet}"
         df.to_sql(table, con=engine, if_exists="replace", index=False, schema="dbo")
-        tables.append(table)
+        tables.append(f"dbo.{table}")
     return tables
 
 
@@ -56,8 +60,14 @@ app.add_middleware(
 
 @app.get("/api/v1/health")
 def health():
-    eje, ppto = _sources()
-    return {"ok": True, "eje": eje, "ppto": ppto}
+    y = _current_year()
+    return {
+        "ok": True,
+        "dataSource": "sql",
+        "tablesPattern": "dbo.sd_inv_{año}_{EJE|PPTO}",
+        "defaultYear": y,
+        "yearRange": {"min": MIN_DATA_YEAR, "max": y},
+    }
 
 
 @app.get("/api/v1/months")
@@ -66,17 +76,32 @@ def months():
 
 
 @app.get("/api/v1/report")
-def report(month: str = Query(default="Mar", description="Mes: Ene, Feb, Mar, ... Dic")):
-    eje_path, ppto_path = _sources()
-    eje_df, ppto_df = load_sources(eje_path, ppto_path)
+def report(
+    month: str = Query(default="Dic", description="Mes: Ene, Feb, Mar, ... Dic"),
+    year: int | None = Query(default=None, description=f"Año ({MIN_DATA_YEAR} … año en curso); por defecto año actual"),
+):
+    y = _validate_year(year if year is not None else _current_year())
+    try:
+        eje_df, ppto_df = load_sources_from_db(get_engine(), y)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return build_report(eje_df, ppto_df, month)
 
 
 @app.get("/api/v1/series")
-def series(id: int = Query(..., description="id de item (report.items[].id)")):
-    eje_path, ppto_path = _sources()
-    eje_df, ppto_df = load_sources(eje_path, ppto_path)
-    return build_series(eje_df, ppto_df, id)
+def series(
+    id: int = Query(..., description="id de item (report.items[].id)"),
+    year: int | None = Query(default=None, description="Año de las tablas dbo.sd_inv_{año}_*"),
+):
+    y = _validate_year(year if year is not None else _current_year())
+    try:
+        eje_df, ppto_df = load_sources_from_db(get_engine(), y)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        return build_series(eje_df, ppto_df, id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/v1/upload")
@@ -84,6 +109,8 @@ async def upload_excel_to_db(
     year: int = Form(..., description="Año para nombres de tabla dbo.sd_inv_{año}_{hoja}"),
     file: UploadFile = File(...),
 ):
+    _validate_year(year)
+
     if not file.filename or not str(file.filename).lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(status_code=400, detail="Se requiere un archivo .xlsx o .xlsm")
 
@@ -103,10 +130,15 @@ async def upload_excel_to_db(
 
 @app.get("/api/v1/debug")
 def debug():
-    return {
-        "excel_store_file": getattr(excel_store, "__file__", None),
-        "build_report_keys": list(build_report(*load_sources(*_sources()), "Mar").keys()),
-        "totales_keys": list(build_report(*load_sources(*_sources()), "Mar")["totales"].keys()),
-        "item_keys": list(build_report(*load_sources(*_sources()), "Mar")["items"][0].keys()),
-    }
-
+    y = _current_year()
+    try:
+        sample = build_report(*load_sources_from_db(get_engine(), y), "Mar")
+        return {
+            "excel_store_file": getattr(excel_store, "__file__", None),
+            "year": y,
+            "build_report_keys": list(sample.keys()),
+            "totales_keys": list(sample["totales"].keys()),
+            "item_keys": list(sample["items"][0].keys()) if sample.get("items") else [],
+        }
+    except Exception as exc:
+        return {"error": str(exc), "year": y}
